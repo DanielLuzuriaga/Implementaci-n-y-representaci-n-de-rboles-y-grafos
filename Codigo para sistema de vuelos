@@ -1,0 +1,498 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Text;
+
+namespace SistemaVuelosUEA
+{
+    // Criterios de optimización algorítmica
+    public enum CriterioBusqueda
+    {
+        MenorPrecio = 1,
+        MenorTiempo = 2,
+        MenorEscalas = 3
+    }
+
+    // Arista ponderada con múltiples atributos (Precio y Tiempo)
+    public class ConexionVuelo
+    {
+        public string Destino { get; set; }
+        public string Aerolinea { get; set; }
+        public decimal Precio { get; set; }
+        public int DuracionMinutos { get; set; }
+
+        public ConexionVuelo(string destino, string aerolinea, decimal precio, int duracionMinutos)
+        {
+            Destino = destino;
+            Aerolinea = aerolinea;
+            Precio = precio;
+            DuracionMinutos = duracionMinutos;
+        }
+    }
+
+    // Gestor de la Estructura de Datos (Lista de Adyacencia y Matriz de Adyacencia)
+    public class GrafoVuelos
+    {
+        private readonly Dictionary<string, List<ConexionVuelo>> _listaAdyacencia;
+
+        public GrafoVuelos()
+        {
+            _listaAdyacencia = new Dictionary<string, List<ConexionVuelo>>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        public void AgregarAeropuerto(string codigo)
+        {
+            if (!_listaAdyacencia.ContainsKey(codigo))
+            {
+                _listaAdyacencia[codigo] = new List<ConexionVuelo>();
+            }
+        }
+
+        public void AgregarVuelo(string origen, string destino, string aerolinea, decimal precio, int duracionMinutos)
+        {
+            AgregarAeropuerto(origen);
+            AgregarAeropuerto(destino);
+            _listaAdyacencia[origen].Add(new ConexionVuelo(destino, aerolinea, precio, duracionMinutos));
+        }
+
+        public bool ExisteAeropuerto(string codigo) => _listaAdyacencia.ContainsKey(codigo);
+
+        public Dictionary<string, List<ConexionVuelo>> ObtenerListaAdyacencia() => _listaAdyacencia;
+
+        public List<string> ObtenerNodos() => _listaAdyacencia.Keys.OrderBy(k => k).ToList();
+
+        public int ObtenerTotalVértices() => _listaAdyacencia.Count;
+
+        public int ObtenerTotalAristas() => _listaAdyacencia.Values.Sum(lista => lista.Count);
+
+        // Genera la Matriz de Adyacencia basada en los precios de los vuelos
+        public (decimal[,] Matriz, List<string> IndiceNodos) ObtenerMatrizAdyacencia()
+        {
+            var nodos = ObtenerNodos();
+            int n = nodos.Count;
+            decimal[,] matriz = new decimal[n, n];
+
+            for (int i = 0; i < n; i++)
+            {
+                for (int j = 0; j < n; j++)
+                {
+                    matriz[i, j] = (i == j) ? 0 : -1; // -1 indica ausencia de conexión directa
+                }
+            }
+
+            for (int i = 0; i < n; i++)
+            {
+                string origen = nodos[i];
+                foreach (var conexion in _listaAdyacencia[origen])
+                {
+                    int j = nodos.IndexOf(conexion.Destino);
+                    if (j != -1)
+                    {
+                        if (matriz[i, j] == -1 || conexion.Precio < matriz[i, j])
+                        {
+                            matriz[i, j] = conexion.Precio;
+                        }
+                    }
+                }
+            }
+
+            return (matriz, nodos);
+        }
+    }
+
+    // Motor Algorítmico Multicriterio (Dijkstra)
+    public class MotorRutas
+    {
+        public class ResultadoRuta
+        {
+            public List<string> NodosRuta { get; set; } = new List<string>();
+            public List<ConexionVuelo> DetalleConexiones { get; set; } = new List<ConexionVuelo>();
+            public decimal CostoTotal { get; set; }
+            public int TiempoTotalMinutos { get; set; }
+            public double TiempoEjecucionMs { get; set; }
+            public int IteracionesRelajacion { get; set; }
+            public CriterioBusqueda CriterioUsado { get; set; }
+            public bool Exito { get; set; }
+        }
+
+        public static ResultadoRuta EncontrarRutaOptima(GrafoVuelos grafo, string origen, string destino, CriterioBusqueda criterio)
+        {
+            var resultado = new ResultadoRuta { CriterioUsado = criterio };
+            var cronometro = Stopwatch.StartNew();
+
+            if (!grafo.ExisteAeropuerto(origen) || !grafo.ExisteAeropuerto(destino))
+            {
+                cronometro.Stop();
+                resultado.Exito = false;
+                return resultado;
+            }
+
+            var distancias = new Dictionary<string, decimal>();
+            var previos = new Dictionary<string, (string NodoAnterior, ConexionVuelo Conexion)>();
+            var colaPrioridad = new PriorityQueue<string, decimal>();
+
+            foreach (var nodo in grafo.ObtenerListaAdyacencia().Keys)
+            {
+                distancias[nodo] = decimal.MaxValue;
+            }
+
+            distancias[origen] = 0;
+            colaPrioridad.Enqueue(origen, 0);
+
+            int contadorRelajaciones = 0;
+
+            while (colaPrioridad.Count > 0)
+            {
+                var nodoActual = colaPrioridad.Dequeue();
+
+                if (nodoActual.Equals(destino, StringComparison.OrdinalIgnoreCase))
+                    break;
+
+                foreach (var vecino in grafo.ObtenerListaAdyacencia()[nodoActual])
+                {
+                    contadorRelajaciones++;
+
+                    // Determinación del peso según el criterio
+                    decimal pesoArista = criterio switch
+                    {
+                        CriterioBusqueda.MenorPrecio => vecino.Precio,
+                        CriterioBusqueda.MenorTiempo => vecino.DuracionMinutos,
+                        CriterioBusqueda.MenorEscalas => 1,
+                        _ => vecino.Precio
+                    };
+
+                    decimal nuevaDistancia = distancias[nodoActual] + pesoArista;
+
+                    if (nuevaDistancia < distancias[vecino.Destino])
+                    {
+                        distancias[vecino.Destino] = nuevaDistancia;
+                        previos[vecino.Destino] = (nodoActual, vecino);
+                        colaPrioridad.Enqueue(vecino.Destino, nuevaDistancia);
+                    }
+                }
+            }
+
+            cronometro.Stop();
+            resultado.TiempoEjecucionMs = cronometro.Elapsed.TotalMilliseconds;
+            resultado.IteracionesRelajacion = contadorRelajaciones;
+
+            if (distancias[destino] == decimal.MaxValue)
+            {
+                resultado.Exito = false;
+                return resultado;
+            }
+
+            // Reconstrucción del camino
+            var pasoActual = destino;
+            while (previos.ContainsKey(pasoActual))
+            {
+                var info = previos[pasoActual];
+                resultado.NodosRuta.Insert(0, pasoActual);
+                resultado.DetalleConexiones.Insert(0, info.Conexion);
+                resultado.CostoTotal += info.Conexion.Precio;
+                resultado.TiempoTotalMinutos += info.Conexion.DuracionMinutos;
+                pasoActual = info.NodoAnterior;
+            }
+            resultado.NodosRuta.Insert(0, origen);
+            resultado.Exito = true;
+
+            return resultado;
+        }
+    }
+
+    // Interfaz de Usuario e Integración de Funcionalidades
+    public class Program
+    {
+        private const string RutaArchivo = "base_vuelos.txt";
+
+        public static void Main(string[] args)
+        {
+            Console.Title = "UEA - Sistema de Optimización de Rutas Aéreas";
+
+            if (!File.Exists(RutaArchivo))
+            {
+                GenerarArchivoBaseFicticio(RutaArchivo);
+            }
+
+            GrafoVuelos grafo = CargarGrafoDesdeArchivo(RutaArchivo);
+
+            bool salir = false;
+            while (!salir)
+            {
+                MostrarEncabezadoInstitucional();
+                Console.WriteLine("1. Reportería Completa (Lista y Matriz de Adyacencia)");
+                Console.WriteLine("2. Buscar Ruta Óptima (Precio / Tiempo / Escalas)");
+                Console.WriteLine("3. Registrar Nueva Ruta Aérea (CRUD / Persistencia)");
+                Console.WriteLine("4. Recargar Base de Datos de Vuelos");
+                Console.WriteLine("5. Salir del Programa");
+                Console.WriteLine("==================================================================");
+                Console.Write("Seleccione una opción (1-5): ");
+
+                switch (Console.ReadLine()?.Trim())
+                {
+                    case "1":
+                        MostrarReporteriaEstructura(grafo);
+                        Pausar();
+                        break;
+                    case "2":
+                        EjecutarBusquedaMulticriterio(grafo);
+                        Pausar();
+                        break;
+                    case "3":
+                        AgregarRutaManual(grafo);
+                        Pausar();
+                        break;
+                    case "4":
+                        GenerarArchivoBaseFicticio(RutaArchivo);
+                        grafo = CargarGrafoDesdeArchivo(RutaArchivo);
+                        Console.WriteLine("\n[ÉXITO] Base de datos restaurada correctamente.");
+                        Pausar();
+                        break;
+                    case "5":
+                        salir = true;
+                        break;
+                    default:
+                        Console.WriteLine("\n[ERROR] Opción no válida. Intente de nuevo.");
+                        Pausar();
+                        break;
+                }
+            }
+        }
+
+        private static void MostrarEncabezadoInstitucional()
+        {
+            Console.Clear();
+            Console.WriteLine("==================================================================");
+            Console.WriteLine("                UNIVERSIDAD ESTATAL AMAZÓNICA                    ");
+            Console.WriteLine("           CARRERA DE TECNOLOGÍAS DE LA INFORMACIÓN               ");
+            Console.WriteLine("==================================================================");
+            Console.WriteLine(" ASIGNATURA : Estructura de Datos y Algoritmos                   ");
+            Console.WriteLine(" AUTORES    : Daniel Luzuriaga, Juan Pérez                       ");
+            Console.WriteLine(" PROYECTO   : Optimización de Rutas Aéreas (Grafos & Dijkstra)    ");
+            Console.WriteLine("==================================================================");
+        }
+
+        private static GrafoVuelos CargarGrafoDesdeArchivo(string ruta)
+        {
+            var grafo = new GrafoVuelos();
+            foreach (var linea in File.ReadAllLines(ruta))
+            {
+                if (string.IsNullOrWhiteSpace(linea) || linea.StartsWith("#")) continue;
+                var partes = linea.Split(',');
+                if (partes.Length >= 5)
+                {
+                    string origen = partes[0].Trim().ToUpper();
+                    string destino = partes[1].Trim().ToUpper();
+                    string aerolinea = partes[2].Trim();
+
+                    if (decimal.TryParse(partes[3].Trim(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out decimal precio) &&
+                        int.TryParse(partes[4].Trim(), out int duracion))
+                    {
+                        grafo.AgregarVuelo(origen, destino, aerolinea, precio, duracion);
+                    }
+                }
+            }
+            return grafo;
+        }
+
+        private static void GenerarArchivoBaseFicticio(string ruta)
+        {
+            string contenido = @"#Origen,Destino,Aerolinea,Precio,DuracionMinutos
+UIO,GYE,Equair,65.00,50
+UIO,CUE,LATAM,45.00,45
+UIO,MEC,Avianca,50.00,40
+CUE,GYE,LATAM,25.00,35
+CUE,GPS,Avianca,180.00,120
+GYE,GPS,LATAM,110.00,100
+GYE,SCY,Equair,95.00,90
+MEC,GYE,Avianca,30.00,30
+SPO,UIO,Aeroregional,40.00,35
+SPO,CUE,Aeroregional,35.00,40
+GYE,BOG,Avianca,210.00,110
+BOG,MIA,AmericanAirlines,320.00,220
+GPS,MIA,Delta,450.00,300
+MEC,GPS,Avianca,130.00,110";
+            File.WriteAllText(ruta, contenido);
+        }
+
+        private static void MostrarReporteriaEstructura(GrafoVuelos grafo)
+        {
+            Console.Clear();
+            Console.WriteLine("========================================================================================");
+            Console.WriteLine("           1. VISTA DE LISTA DE ADYACENCIA (CONEXIONES DIRECTAS)                        ");
+            Console.WriteLine("========================================================================================");
+
+            foreach (var kvp in grafo.ObtenerListaAdyacencia())
+            {
+                Console.Write($"[{kvp.Key}] --------> ");
+                if (kvp.Value.Count == 0)
+                {
+                    Console.WriteLine("(Sin vuelos salientes)");
+                }
+                else
+                {
+                    var conexiones = kvp.Value.Select(c => $"({c.Destino} | {c.Aerolinea} | ${c.Precio:F2} | {c.DuracionMinutos}m)");
+                    Console.WriteLine(string.Join(" -> ", conexiones));
+                }
+            }
+
+            Console.WriteLine("\n========================================================================================");
+            Console.WriteLine("           2. VISTA DE MATRIZ DE ADYACENCIA (COSTOS DE PRECIO EN USD)                   ");
+            Console.WriteLine("========================================================================================");
+
+            var (matriz, nodos) = grafo.ObtenerMatrizAdyacencia();
+            Console.Write("       ");
+            foreach (var nodo in nodos) Console.Write($"{nodo,8}");
+            Console.WriteLine("\n" + new string('-', 8 + nodos.Count * 8));
+
+            for (int i = 0; i < nodos.Count; i++)
+            {
+                Console.Write($"{nodos[i],5} |");
+                for (int j = 0; j < nodos.Count; j++)
+                {
+                    if (matriz[i, j] == -1)
+                        Console.Write($"{"Inf",8}");
+                    else
+                        Console.Write($"{matriz[i, j],8:F0}");
+                }
+                Console.WriteLine();
+            }
+
+            Console.WriteLine("========================================================================================");
+            Console.WriteLine($"TOTALES: {grafo.ObtenerTotalVértices()} Aeropuertos (Vértices) | {grafo.ObtenerTotalAristas()} Rutas Directas (Aristas)");
+            Console.WriteLine("========================================================================================");
+        }
+
+        private static void EjecutarBusquedaMulticriterio(GrafoVuelos grafo)
+        {
+            Console.Clear();
+            Console.WriteLine("========================================================================================");
+            Console.WriteLine("                 BÚSQUEDA Y OPTIMIZACIÓN DE RUTAS AÉREAS                                ");
+            Console.WriteLine("========================================================================================");
+            Console.Write("Ingrese código del Aeropuerto Origen (ej. UIO, SPO, CUE): ");
+            string origen = Console.ReadLine()?.Trim().ToUpper() ?? "";
+            Console.Write("Ingrese código del Aeropuerto Destino (ej. MIA, GPS, GYE): ");
+            string destino = Console.ReadLine()?.Trim().ToUpper() ?? "";
+
+            Console.WriteLine("\nSeleccione el Criterio de Optimización:");
+            Console.WriteLine(" 1. Ruta MÁS BARATA (Menor Costo)");
+            Console.WriteLine(" 2. Ruta MÁS RÁPIDA (Menor Tiempo Total)");
+            Console.WriteLine(" 3. Ruta MÁS DIRECTA (Menor Cantidad de Escalas)");
+            Console.Write("Opción (1-3): ");
+
+            if (!Enum.TryParse(Console.ReadLine()?.Trim(), out CriterioBusqueda criterio))
+            {
+                criterio = CriterioBusqueda.MenorPrecio;
+            }
+
+            var res = MotorRutas.EncontrarRutaOptima(grafo, origen, destino, criterio);
+
+            if (!res.Exito)
+            {
+                Console.WriteLine("\n[RESULTADO] No se encontró ninguna ruta válida entre los aeropuertos especificados.");
+                return;
+            }
+
+            Console.WriteLine("\n----------------------------------------------------------------------------------------");
+            Console.WriteLine($"RUTA ÓPTIMA ENCONTRADA (Criterio: {res.CriterioUsado}):");
+            Console.Write($" {res.NodosRuta[0]} ");
+            for (int i = 0; i < res.DetalleConexiones.Count; i++)
+            {
+                var c = res.DetalleConexiones[i];
+                Console.Write($"--[{c.Aerolinea} | ${c.Precio:F2} | {c.DuracionMinutos}m]--> {res.NodosRuta[i + 1]} ");
+            }
+
+            Console.WriteLine("\n\nRESUMEN DE ITINERARIO:");
+            Console.WriteLine($" - Escalas Intermedias : {res.DetalleConexiones.Count - 1}");
+            Console.WriteLine($" - Tiempo Total Vuelo : {res.TiempoTotalMinutos / 60}h {res.TiempoTotalMinutos % 60}m");
+            Console.WriteLine($" - Costo Total Boleto : ${res.CostoTotal:F2}");
+            Console.WriteLine("----------------------------------------------------------------------------------------");
+            Console.WriteLine("MÉTRICAS Y COMPLEJIDAD DEL ALGORITMO:");
+            Console.WriteLine($" - Tiempo de Ejecución   : {res.TiempoEjecucionMs:F3} ms");
+            Console.WriteLine($" - Relajaciones de Aristas: {res.IteracionesRelajacion}");
+            Console.WriteLine(" - Complejidad Teórica   : O((V + E) log V) mediante PriorityQueue");
+            Console.WriteLine("========================================================================================");
+
+            Console.Write("\n¿Desea exportar este itinerario a un archivo de texto? (S/N): ");
+            if (Console.ReadLine()?.Trim().ToUpper() == "S")
+            {
+                ExportarItinerarioTexto(res);
+            }
+        }
+
+        private static void ExportarItinerarioTexto(MotorRutas.ResultadoRuta res)
+        {
+            string nombreArchivo = $"Itinerario_{res.NodosRuta.First()}_{res.NodosRuta.Last()}.txt";
+            StringBuilder sb = new StringBuilder();
+
+            sb.AppendLine("==========================================================");
+            sb.AppendLine("           UNIVERSIDAD ESTATAL AMAZÓNICA                  ");
+            sb.AppendLine("           COMPROBANTE DE ITINERARIO DE VUELO             ");
+            sb.AppendLine("==========================================================");
+            sb.AppendLine($"Fecha de Consulta : {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            sb.AppendLine($"Ruta Solicitada  : {res.NodosRuta.First()} -> {res.NodosRuta.Last()}");
+            sb.AppendLine($"Criterio Utilizado: {res.CriterioUsado}");
+            sb.AppendLine("----------------------------------------------------------");
+            sb.AppendLine("DETALLE DEL ITINERARIO:");
+
+            for (int i = 0; i < res.DetalleConexiones.Count; i++)
+            {
+                var c = res.DetalleConexiones[i];
+                sb.AppendLine($"  Tramo {i + 1}: {res.NodosRuta[i]} -> {res.NodosRuta[i + 1]} | {c.Aerolinea} | Costo: ${c.Precio:F2} | Duración: {c.DuracionMinutos} min");
+            }
+
+            sb.AppendLine("----------------------------------------------------------");
+            sb.AppendLine($"Tiempo Total Estimado : {res.TiempoTotalMinutos / 60}h {res.TiempoTotalMinutos % 60}m");
+            sb.AppendLine($"Costo Total Boleto    : ${res.CostoTotal:F2}");
+            sb.AppendLine("==========================================================");
+
+            File.WriteAllText(nombreArchivo, sb.ToString());
+            Console.WriteLine($"\n[ÉXITO] Itinerario guardado exitosamente en '{nombreArchivo}'.");
+        }
+
+        private static void AgregarRutaManual(GrafoVuelos grafo)
+        {
+            Console.Clear();
+            Console.WriteLine("==================================================================");
+            Console.WriteLine("               REGISTRAR NUEVA RUTA DE VUELO                      ");
+            Console.WriteLine("==================================================================");
+
+            Console.Write("Código IATA Origen (ej. UIO): ");
+            string origen = Console.ReadLine()?.Trim().ToUpper() ?? "";
+
+            Console.Write("Código IATA Destino (ej. GYE): ");
+            string destino = Console.ReadLine()?.Trim().ToUpper() ?? "";
+
+            Console.Write("Nombre de la Aerolínea: ");
+            string aerolinea = Console.ReadLine()?.Trim() ?? "AeroEcuador";
+
+            Console.Write("Precio del Boleto (USD): ");
+            if (!decimal.TryParse(Console.ReadLine()?.Trim(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out decimal precio))
+            {
+                precio = 100.00m;
+            }
+
+            Console.Write("Duración Estimada (Minutos): ");
+            if (!int.TryParse(Console.ReadLine()?.Trim(), out int duracion))
+            {
+                duracion = 60;
+            }
+
+            grafo.AgregarVuelo(origen, destino, aerolinea, precio, duracion);
+
+            // Persistir en el archivo base_vuelos.txt
+            string linea = $"{origen},{destino},{aerolinea},{precio.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)},{duracion}";
+            File.AppendAllLines(RutaArchivo, new[] { linea });
+
+            Console.WriteLine("\n[ÉXITO] La nueva ruta ha sido agregada e insertada en el archivo de base de datos.");
+        }
+
+        private static void Pausar()
+        {
+            Console.WriteLine("\nPresione cualquier tecla para continuar...");
+            Console.ReadKey();
+        }
+    }
+}
